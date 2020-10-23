@@ -1,0 +1,358 @@
+---
+title: "Time Series - Bike Sharing"
+author: "nurfitryah"
+date: "10/17/2020"
+output: 
+  html_document:
+    df_print: paged
+    highlight: zenburn
+    theme: readable
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: true
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate) # manipulate date
+library(plotly) # interactive visualization package
+library(zoo) # manipulate missing value
+library(tseries) # time series package
+library(forecast) # forecast package
+library(MLmetrics) # calculate error
+```
+
+
+```{r,echo=FALSE}
+knitr::include_graphics("bike-sharing-jakarta.jpg")
+```
+
+# Introduction
+
+People nowadays concerns about their healthy and global warming issues. Global warming issue itself has been public's attention since 2008 and global warming issue itself affected to our daily life, climate change is one of them. Climate change is forcing cities to re-imaging their transportation infrastructure. Shared mobility concepts, such as car sharing, bike sharing or scooter sharing become more and more popular. And if they are implemented well, they can actually contribute to mitigating climate change. Bike sharing in particular is interesting because no electricity of gasoline is necessary (unless e-bikes are used) for this mode of transportation. Many cities are provide the bike sharing facilities, Washington DC is one of them. This Learning By Building (LBB) will do simple forecast on Bike Sharing in Washington DC data set.
+
+## Read Data
+
+```{r}
+bike <- read.csv("bike_sharing_dataset.csv")
+head(bike)
+```
+
+
+## A Peek of Data
+
+Let's take a peek this data set further
+
+```{r}
+dim(bike) # checking dimensions of data
+```
+This data set has 2,922 days and have 29 columns that will present our target and predictors. Then we need to know, how long this 2,922 days recorded on this data set by using `range ()` function.  
+```{r}
+range(bike$date)
+```
+
+This data set has period of time from 01 Jan 2011 till 31 Des 2018. Then, we need to know the contents of each columns further by using `glimpse()` function
+
+```{r}
+glimpse(bike)
+```
+
+### Contents of Columns
+
+- date            : date with the format yyyy-mm-dd
+- temp_avg        : average daily temperature in degree Celsius
+- temp_min        : minimum daily temperature in degree Celsius
+- temp_max        : maximum daily temperature in degree Celsius
+- temp_observ     : temperature at the time of observation in degree Celsius
+- precip          : amount of precipitation in mm
+- wind            : wind speed in meters per second
+- wt_fog          : weather type fog, ice fog, or freezing fog (may include heavy fog)
+- wtheavyfog      : weather type heavy fog or heaving freezing fog (not always distinguished from fog)
+- wt_thunder      : weather type thunder
+- wt_sleet        : weather type ice pellets, sleet, snow pellets, or small hail
+- wt_hail         : weather type hail (may include small hail)
+- wt_glaze        : weather type glaze or rime
+- wt_haze         : weather type smoke or haze
+- wtdriftsnow     : weather type blowing or drifting snow
+- wthighwind      : weather type high or damaging winds
+- wt_mist         : weather type mist
+- wt_drizzle      : weather type drizzle
+- wt_rain         : weather type rain (may include freezing rain, drizzle, and freezing drizzle)
+- wtfreezerain    : weather type freezing rain
+- wt_snow         : weather type snow, snow pellets, snow grains, or ice crystals
+- wtgroundfog     : weather type ground fog
+- wticefog        : weather type ice fog or freezing fog
+- wtfreezedrizzle : weather type freezing drizzle
+- wt_unknown      : weather type unknown source of precipitation
+- casual          : number of unregistered customers
+- registered      : number of registered customers
+- total_cust      : sum of registered and casual customers
+- holiday         : indicates whether the day is a holiday or not
+
+
+
+# Data Pre-processing
+
+After take a peek into data set we know that most of columns have missing value, then we need to know how bad or how many the missing value is  
+
+```{r}
+colSums(is.na(bike))
+```
+
+Well most of contents of the columns have more than 5% missing value, then we need to remove them. We're gonna select column `date` and `total_cust` since column `total_cust` contains total number of registered and unregistered customers. 
+
+```{r}
+bike_clean <- bike %>% 
+  mutate(date = ymd(date)) %>% 
+  select(date, total_cust)
+colSums(is.na(bike_clean))
+```
+
+Fill the missing value by mean value before and after missing data by using `na.fill()` function by `zoo` package
+
+```{r}
+bike_clean <- bike_clean %>% 
+  mutate(total_cust = na.fill(object = total_cust,
+                              fill = "extend"))
+
+```
+
+## Visualize Data
+
+Let's visualize data before create time series data of this data set.
+
+```{r}
+plot1 <- ggplot(data = bike_clean, mapping = aes(date, total_cust)) +
+  geom_line() +
+  geom_point() +
+  labs(y = "Total Customer",
+       x = "Date")+
+  theme_minimal()
+ggplotly(plot1)
+```
+
+Based on graph above we could indicate that this data has trend and seasonal pattern. Now, let's move on to time series object. 
+
+# Time Series & Forecast
+
+We have data set about Bike Sharing that records 8 years of the bike sharing data. How many customers that use this bike sharing per day. Now, we would like to **forecast on 2018** of this data set. First, we need to create time series object.  
+
+## Create Time Series Object and Check Stationary 
+
+In this section, we're going to create initial time series object of data set to observe is this data set is an additive or multiplicative?
+
+```{r}
+# initial time series object (first attempt)
+bike_ts <- ts(data = bike_clean$total_cust,
+              start = range(bike_clean$date)[[1]],
+              frequency = (7*4)) # monthly pattern (7*4)
+```
+
+After create time series object, we're gonna verify is this data has additive or multiplicative pattern or no by using `decompose()` function.
+
+```{r}
+bike_ts %>% 
+  decompose() %>% 
+  autoplot()
+```
+
+Plot above shows that this data has additive pattern and range of errors were from -5,000 to 5,000, and on `trend` plot shows up and down pattern are still exist. Therefore, we could indicate that this data set has **Multiple Seasonal Time Series Object**. How do we create time series object if our data set is a multiple seasonal time series? By using `msts()` function we could create multiple time series object and use `mstl()` function to create decomposition on multiple seasonal time series object.
+
+```{r}
+# time series object with multiple seasonal (2nd attempt)
+msts(data = bike_clean$total_cust,
+     seasonal.periods = c(7*4, 7*4*4)) %>% # multiple seasonal ts (monthly, quarterly)
+  mstl() %>% # multiple seasonal decomposition
+  autoplot()
+```
+
+Take a peek on `Trend` section. The ups and downs are still exist. This mean that we need to find the right frequency/seasonal.periods.
+
+```{r}
+# 2nd attempt on multiple seasonal ts (3rd attempt on time series object)
+msts(data = bike_clean$total_cust,
+     seasonal.periods = c(7*4, 7*4*12)) %>% # multiple seasonal ts (monthly, yearly)
+  mstl() %>% # multiple seasonal decomposition
+  autoplot()
+```
+
+Although on the 3rd attempt there are still slightly ups and downs, the trend is smoother than the 2nd attempt and the first attempt. Other than that, plot above shows that this data set has additive pattern. Then, we will assign the 3rd attempt into `bike_msts`. Afterthat, we need to know is time series object a stationary or not by using `adf.test()` function.
+
+```{r}
+# assign the 3rd attempt
+bike_msts <- msts(data = bike_clean$total_cust,
+     seasonal.periods = c(7*4, 7*4*12))
+
+# check stationary
+adf.test(bike_msts)
+```
+
+Result above shows that the p-value of `bike_ts` is stationary because p-value of data is smaller than 0.05 (p-value < 0.05). There's no need to do differencing, thus we could applied ARIMA or SARIMA model building.
+
+## Cross Validation
+
+Separate data to be data train and test. Data test were taken from last year (2018) of data.
+
+```{r}
+bike_test <- bike_msts %>% 
+  tail(7*4*12)
+
+bike_train <- bike_msts %>% 
+  head(length(bike_msts) - (7*4*12))
+```
+
+
+## Build Model
+
+This section, create 3 model. There are Holt-Winter model, model using `auto.arima()` function (model auto), and Seasonal ARIMA (SARIMA) model by using `stlm()` function. 
+
+```{r}
+# create Holt-Winter (Triple Exponential Smoothing/TES) model
+bike_tes <- HoltWinters(x = bike_train, seasonal = "additive")
+
+# create auto.arima model
+bike_auto <- auto.arima(y = bike_train, seasonal = T)
+
+# create SARIMA model
+bike_stlm <- stlm(y = bike_train, method = "arima")
+```
+
+## Forecast The Data
+
+After build model, let's forecast each model into data test.
+
+```{r}
+# forecast on Holt-Winter model
+bike_forecast1 <- forecast(object = bike_tes, h = 336)
+
+# forecast on auto.arima model
+bike_forecast2 <- forecast(object = bike_auto, h = 336)
+
+# forecast on SARIMA (stlm) model
+bike_forecast3 <- forecast(object = bike_stlm, h = 336)
+```
+
+## Evaluate The Model
+
+After forecast each model and assign it into `bike_forecast1` (for TES/Holt-Winter model), `bike_forecast2` (for auto.arima model), and `bike_forecast3` (for SARIMA model), it will be better to evaluate each model. There are several ways to evaluate the model. In this section, I will use `accuracy()` function to compare Mean Absolute Percentage Error (MAPE) of each model.
+
+```{r}
+accuracy(bike_forecast1)
+accuracy(bike_forecast2)
+accuracy(bike_forecast3)
+```
+
+Mean Absolute Percentage Error (MAPE) of each model was:
+
+- TES/Holt-Winter Model: 46.06%
+- Auto ARIMA Model: 38.46%
+- SARIMA Model: 28.97%
+
+There were a huge gap, the difference is huge between MAPE of TES/Holt-Winter Model, Auto ARIMA Model, and SARIMA Model.
+
+Another way, we could visualize and compare between the actual and each model. 
+
+### Visualization on TES/Holt-Winter Model
+
+```{r}
+plot1 <- bike_msts %>% 
+  autoplot(series = "Actual") +
+  autolayer(bike_forecast1$mean, series = "Predict Test TES/Holt-Winter") +
+  autolayer(bike_forecast1$fitted, series = "Predict Train TES/Holt-Winter") +
+  labs(title = "Comparation Actual and Forecast using Holt-Winter Model") +
+  theme_minimal()
+
+ggplotly(plot1)
+```
+
+### Visualization on Auto ARIMA Model
+
+```{r}
+plot2 <- bike_msts %>% 
+  autoplot(series = "Actual") +
+  autolayer(bike_forecast2$mean, series = "Predict Test Auto ARIMA") +
+  autolayer(bike_forecast2$fitted, series = "Predict Train Auto ARIMA") +
+  labs(title = "Comparation Actual and Forecast using Auto ARIMA Model") +
+  theme_minimal()
+
+ggplotly(plot2)
+```
+
+### Visualization on SARIMA Model
+
+```{r}
+plot3 <- bike_msts %>% 
+  autoplot(series = "Actual") +
+  autolayer(bike_forecast3$mean, series = "Predict Test SARIMA") +
+  autolayer(bike_forecast3$fitted, series = "Predict Train SARIMA") +
+  labs(title = "Comparation Actual and Forecast using SARIMA Model") +
+  theme_minimal()
+
+ggplotly(plot3)
+```
+
+
+# Assumption Check
+
+Because the error of SARIMA Model is smaller than others, I will do assumption check only on SARIMA Model. There were two assumption that we had to check. 
+
+**1. No-autocorrelation Residual**
+
+To check No-autocorrelation Residual, we could use `Box.test()` function and input type parameter as `Ljung-Box`.
+
+- $H_0$: residual has no-autocorrelation => p-value **>** 0.05 (alpha)
+- $H_1$: residual has autocorrelation => p-value **<** 0.05 (alpha)
+
+**2. Normality Residual**
+
+To check Normality Residual, we could use `shapiro.test()` function.
+
+- $H_0$: residuals spread normally => p-value **>** 0.05 (alpha)
+- $H_1$: residuals spread unnormally => p-value **<** 0.05 (alpha)
+
+```{r}
+# Assumption Check by LJung-Box Test 
+Box.test(x = bike_stlm$residuals, type = "Ljung-Box")
+
+# Shapiro Test
+shapiro.test(bike_stlm$residuals)
+```
+
+Both p-value on autocorrelation and normality test result are **exceeding 0.05 (alpha)**. This means **the residuals on SARIMA Model has no-autocorrelation and spread normally**.
+
+# Conclusion
+
+We have compare each model by the value of MAPE and even visualize it. There are several conclusion that we obtained, 
+
+- If we compare MAPE between TES/Holt-Winter Model, Auto ARIMA Model, and SARIMA Model, SARIMA Model has smaller error than TES/Holt-Winter and Auto Arima Model. If we would like to forecast, it is more tolerable to use SARIMA Model than other Model.
+
+- On `plot1` that represent visualization of the actual data and TES/Holt-Winter Model, both on the forecast/predict train and test were unable to capture some pattern of the actual model. Moreover, TES/Holt-Winter Model are unable to capture any pattern on 2011. 
+
+- On `plot2` that represent visualization of the actual data and Auto ARIMA Model, the forecast/predict train were able to capture the pattern of the actual, although there were not exact pattern captured. But on the forecast/predict test were unable to capture any pattern. 
+
+- On `plot3` that represent visualization of the actual data and SARIMA Model, the forecast/predict train is just right (able to capture the pattern of the actual). But on the forecast/predict test, most of pattern unable to captured but it's still better than TES/Holt-Winter or Auto ARIMA Model.
+
+- Why does SARIMA Model is better? Based on assumption check, the residuals on SARIMA Model has:
+  - No-autocorrelation, means that each predictors/residuals has no correlation
+  - Spreads normally, the prediction/forecast results that have small error.
+  
+It is recommended to use SARIMA Model, than other models (TES/Holt-Winter and Auto ARIMA). 
+
+But, it is recommended to do trial and error further. There is possibilities using other models than SARIMA, Auto ARIMA, and TES/Holt-Winter has smaller error and better performance.
+
+
+# Source
+
+1. Data set Bike Sharing : https://www.kaggle.com/juliajemals/bike-sharing-washington-dc
+
+
+
+
